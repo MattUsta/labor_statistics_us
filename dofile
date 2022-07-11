@@ -1,0 +1,688 @@
+** Labor Economics - wages, fertility, education, marital status, & demographic analysis
+** Data: American Community Survey (ACS) 2000 - 2015
+** Last edited: October 2, 2021
+** Matt
+
+*Install (if needed)
+*ssc instal gtools
+*ssc motivate
+*ssc demotivate
+*ssc install estout, replace
+
+clear all
+set more off 
+
+*User
+global who = "M_w" /* M_w = Matt Windows, M_m = Matt Mac*/
+
+*Set Hours Lower Bound
+global minh = 10 
+
+*Vars to use
+global use_vars = "year perwt labforce incwage sex age race uhrswork educd fertyr nchild marst"
+
+*Select section to run where: 1=yes, 0=no
+global dataprep = 0 
+global figures = 1
+global depressed = 2 /* =2 if both*/
+
+*****************************************************************
+*Paths
+*****************************************************************
+
+if "$who" == "M_w" global pathinit = "C:\Users\Computer\Dropbox\WashU_PhD\Fall2021\Labor\HW\hw1"
+if "$who" == "M_m" global pathinit = "/Users/ailenstamatti/Desktop/Mati/"
+
+
+global original_data = "$pathinit/Dataset"
+global results = "$pathinit/Output"
+global temp = "$pathinit/Temp"
+global figs = "$pathinit/Figs"
+log using "$temp/DataPrep_HW1.txt", replace
+
+******************************************************************
+*Data Prep
+******************************************************************
+
+if $dataprep == 1 {
+cd $original_data
+use $use_vars using "cleandata_hw1.dta", clear
+
+******************************************************************
+*Heterogeneities & Flags
+******************************************************************
+
+*Flag type of worker (full-time>29hrs & 19hrs<part-time<30hrs)
+gen fulltime = 1 if uhrswork > 29
+replace fulltime = 0 if uhrswork <30 & uhrswork >19 
+label var fulltime "Type of Worker"
+
+*Flag Race (1= white, 2=black, 3=asian)
+gen race_flag = 1 if race==1
+replace race_flag = 2 if race == 2
+replace race_flag = 3 if race>3 & race < 7 
+label var race "Race"
+
+* Age groups (Fertility Analysis)
+gen age_group= 1 if age>14 & age<20
+replace age_group= 2 if age>19 & age<25
+replace age_group= 3 if age>24 & age<30
+replace age_group= 4 if age>29 & age<35
+replace age_group= 5 if age>34 & age<40
+replace age_group= 6 if age>39 & age<45
+replace age_group= 7 if age>44 & age<50
+label var age_group "Age Group"
+
+*Stats income inequality & others - Let zoom in
+gen year_group= 1 if year>1999 & year < 2006
+replace year_group =2 if year>2005 & year < 2011
+replace year_group =3 if year>2010 & year < 2016
+
+*Education Groups (Q2 - 1=HS and below, 2=Some college, 3=College and above)
+gen ed_group = 1 if educd < 65 
+replace ed_group = 2 if educd>64 &educd<101
+replace ed_group = 3 if educd>100
+
+*Flag married (Q3 - 1=married, 0 o/w)
+gen married = 1 if marst < 3
+replace married = 0 if marst > 2
+
+*****************************************************************
+**Q1 - Labor Supply + Wages(hour) + Education + Fertility
+****************************************************************
+
+**Labor Supply
+preserve
+gcollapse (mean) mean_hours_ft = uhrswork if uhrswork >10, by (year fulltime sex) fast
+save "$results/laborsupply_stats_typeworker.dta", replace
+restore 
+
+preserve
+gcollapse (mean) mean_hours_ft = uhrswork if uhrswork > 10, by (year fulltime race_flag sex) fast
+save "$results/laborsupply_stats_type_race.dta", replace
+restore 
+
+preserve
+gcollapse (mean) hours_ft = uhrswork if uhrswork > 10, by (year sex) fast
+drop if hours_ft == .
+save "$results/laborsupply_stats.dta", replace
+restore 
+
+preserve
+gcollapse (mean) hours_ft = uhrswork if uhrswork > 10, by (year sex race_flag) fast
+drop if hours_ft == .
+save "$results/laborsupply_stats_race.dta", replace
+restore 
+
+** Wages
+* Gen hourly wage
+gen hoursyears = uhrswork*52.143 /* 52.143 weeks per year */
+gen nominal_hwage = incwage/hoursyears
+
+*Gen stats by worker type 
+preserve 
+gcollapse (median) median_hwage = nominal_hwage (mean) mean_hwage = nominal_hwage if uhrswork>19 [w=perwt], by(year fulltime sex) fast
+save "$results/wages_stats_typeworker.dta", replace
+restore
+
+*Gen stats 
+preserve 
+gcollapse (median) median_hwage = nominal_hwage (mean) mean_hwage = nominal_hwage [w=perwt], by(year sex) fast
+save "$results/wages_stats.dta", replace
+restore
+
+*Gen stats 
+preserve 
+replace age_group= 8 if age>49 & age<56
+replace age_group= 9 if age>55 & age<61
+replace age_group= 10 if age>60 & age<66
+replace age_group= 11 if age>65 & age<71
+gcollapse (median) median_hwage = nominal_hwage (mean) mean_hwage = nominal_hwage [w=perwt], by(year age_group) fast
+save "$results/wages_stats_age.dta", replace
+restore
+
+preserve 
+replace age_group= 8 if age>49 & age<56
+replace age_group= 9 if age>55 & age<61
+replace age_group= 10 if age>60 & age<66
+replace age_group= 11 if age>65 & age<71
+gcollapse (median) median_hwage = nominal_hwage (mean) mean_hwage = nominal_hwage [w=perwt], by(year sex age_group) fast
+save "$results/wages_stats_age_sex.dta", replace
+restore
+
+*Merge CPI - Adjust by inflation
+merge m:1 year using "cpi_deflactor.dta", nogen keep(match)
+gen hwagereal = (nominal_hwage/deflactor)*100
+gen lwage = log(hwagereal)
+
+preserve 
+gcollapse (mean) mean_wage = hwagereal (median) median_wage = hwagereal (gini) gini_wage = hwagereal (variance) var_lwage=  /*
+*/  lwage (cv) cv_wage = hwagereal (p90) p90_w = hwagereal (p10) p10_w = hwagereal if hwagereal>0 [w=perwt], by (year_group)
+save "$results/wage_stats_table.dta", replace 
+restore
+
+preserve 
+gcollapse (mean) mean_wage = hwagereal (median) median_wage = hwagereal (gini) gini_wage = hwagereal (variance) var_lwage=  /*
+*/  lwage (cv) cv_wage = hwagereal (p90) p90_w = hwagereal (p10) p10_w = hwagereal if hwagereal>0 [w=perwt], by (year_group sex)
+save "$results/wage_stats_table_sex.dta", replace 
+restore
+
+preserve 
+gcollapse (mean) mean_wage = hwagereal (median) median_wage = hwagereal (gini) gini_wage = hwagereal (variance) var_lwage=  /*
+*/  lwage (cv) cv_wage = hwagereal (p90) p90_w = hwagereal (p10) p10_w = hwagereal if hwagereal>0 [w=perwt], by (year_group race_flag)
+save "$results/wage_stats_table_race.dta", replace 
+restore
+
+** Education 
+* Years of Schooling
+gen yofschool = 4 if educd == 10 /* grade 4 */
+replace yofschool = 1 if educd == 14 /* grade 1*/  
+replace yofschool = 2 if educd == 15 /* grade 2*/ 
+replace yofschool = 3 if educd == 16 /* grade 3*/ 
+replace yofschool = 4 if educd == 17 /* grade 4*/ 
+replace yofschool = 5.5 if educd == 21 /* grade 4 or 5*/ 
+replace yofschool = 5 if educd == 22 /* grade 6 and so on*/ 
+replace yofschool = 6 if educd == 23
+replace yofschool = 7.5 if educd == 24
+replace yofschool = 7 if educd == 25
+replace yofschool = 8 if educd == 26
+replace yofschool = 9 if educd == 30
+replace yofschool = 10 if educd == 40
+replace yofschool = 11 if educd == 50
+replace yofschool = 12 if educd == 61
+replace yofschool = 12 if educd == 62
+replace yofschool = 12 if educd == 63
+replace yofschool = 12 if educd == 64
+replace yofschool = 13 if educd == 65
+replace yofschool = 13.5 if educd == 71
+replace yofschool = 14 if educd == 81
+replace yofschool = 16 if educd == 101
+replace yofschool = 18 if educd == 114
+replace yofschool = 18 if educd == 115
+replace yofschool = 21 if educd == 116        
+label var yofschool "Years of Schooling"
+
+**Gen Stats
+*yofschooling - noisy
+preserve 
+gcollapse (mean) mean_yofschool = yofschool, by(year sex) fast
+save "$results/yofschool_stats.dta", replace
+restore
+
+preserve 
+gcollapse (mean) mean_yofschool = yofschool, by(year sex race_flag) fast
+save "$results/yofschool_stats_sex_race.dta", replace
+restore
+
+preserve 
+gcollapse (mean) mean_yofschool = yofschool, by(year race_flag) fast
+save "$results/yofschool_stats_race.dta", replace
+restore
+
+* EducationAttainment
+gen edatt = 1 if educd == 62 /* High School*/
+replace edatt = 1 if educd == 63 /* High School*/
+replace edatt = 1 if educd == 64 /* High School*/
+replace edatt = 0 if educd == 2 /* no schooling*/ 
+replace edatt = 0 if educd > 9 & educd<62 /* less than HS*/
+replace edatt = 1 if educd > 64 & educd < 101 /* some college*/
+replace edatt = 1 if educd > 80 & educd < 84 /* Associate  degree*/
+replace edatt = 2 if educd == 101 /*Bachelor*/
+replace edatt = 2 if educd == 114 /* Master*/
+replace edatt = 2 if educd == 116 /* Doctoral degree */
+label var edatt "Educational Attainment"
+
+*Counting 
+*EdAttaintment
+preserve
+gcollapse (count) hs = incwage if age>24, by(year sex edatt) fast
+save "$results/edu_at.dta", replace
+restore
+
+preserve
+gcollapse (count) hs = incwage if age>24, by(year_group sex edatt race_flag) fast
+save "$results/edu_at_race.dta", replace
+restore
+
+** Fertility
+*Completed Fertility by age group
+preserve
+gcollapse (mean) nchild_mean = nchild if sex == 2, by(year age_group) fast 
+save "$results/fertility_stats.dta", replace 
+restore
+
+preserve
+gcollapse (mean) nchild_mean = nchild if sex == 2, by(year age_group race_flag) fast 
+drop if age_group == .
+save "$results/fertility_stats_race.dta", replace 
+restore
+
+*Births per 1k 
+egen total_f = count(sex) if sex == 2 & age>14 & age<50, by(year)
+gen b_y= 1 if fertyr==2
+egen tby = sum(b_y), by (year)
+gen ratef = (tby/total_f)*1000
+
+preserve
+gcollapse (mean) rate_fer = ratef if sex == 2 & age>14 & age<50, by(year)
+save "$results/fertilityrate.dta", replace 
+restore
+
+*By race
+drop total_f b_y tby ratef
+egen total_f = count(sex) if sex == 2 & age>14 & age<50, by(year race_flag)
+gen b_y= 1 if fertyr==2
+egen tby = sum(b_y), by (year race_flag)
+gen ratef = (tby/total_f)*1000
+
+preserve
+gcollapse (mean) rate_fer = ratef if sex == 2 & age>14 & age<50, by(year race_flag)
+save "$results/fertilityrate_race.dta", replace 
+restore
+
+*By agegroup
+drop total_f b_y tby ratef
+egen total_f = count(sex) if sex == 2 & age>14 & age<50, by(year race_flag age_group)
+gen b_y= 1 if fertyr==2
+egen tby = sum(b_y), by (year race_flag age_group)
+gen ratef = (tby/total_f)*1000
+
+preserve
+gcollapse (mean) rate_fer = ratef if sex == 2 & age>14 & age<50, by(year race_flag age_group)
+save "$results/fertilityrate_agegroup.dta", replace 
+restore
+drop total_f b_y tby ratef
+
+********************************************************************************
+*Q2  
+********************************************************************************
+**# of Childs
+*by year
+preserve
+gcollapse (mean) child_n = nchild if sex ==2, by(year ed_group age_group) fast
+save "$results/nchild_byedgroup.dta", replace 
+restore
+
+*Age groups
+preserve
+gcollapse (mean) child_n = nchild (sd) child_sd = nchild if sex ==2, by(year_group ed_group age_group) fast
+save "$results/nchild_byedgroup_age.dta", replace 
+restore
+
+*Race
+preserve
+gcollapse (mean) child_n = nchild (sd) child_sd = nchild if sex ==2, by(year_group ed_group age_group race_flag) fast
+save "$results/nchild_byedgroup_race.dta", replace 
+restore
+
+********************************************************************************
+*Q3
+********************************************************************************
+*Marital Status by Education Group
+*Counting
+preserve
+gcollapse (count) marriage = incwage if age>17, by(year married ed_group sex race_flag) fast
+save "$results/married_stats.dta", replace 
+restore
+
+preserve
+gcollapse (count) marriage = incwage if age>17, by(year married ed_group age_group) fast
+save "$results/married_stats_age.dta", replace 
+restore
+
+preserve
+gcollapse (count) marriage = incwage if age>17, by(year_group married ed_group sex race_flag) fast
+save "$results/married_stats_table.dta", replace 
+restore
+
+}
+
+*********************************************************************************
+*Figures
+********************************************************************************
+if $figures == 1{
+cd $original_data
+********************************************************************************
+*Q1
+********************************************************************************
+**Labor Supply Plots
+*Total
+u "$results/laborsupply_stats.dta", clear
+twoway (line hours_ft year if sex== 1) (line hours_ft /*
+*/ year if sex== 2), legend(lab(1 "Men") lab(2 "Female")) /*
+*/ ytitle("hours worked") xtitle("year") /*
+*/ graphregion(color(white))
+graph export "$figs/laborsupply.pdf", as (pdf) replace
+
+*Type of Worker
+u "$results/laborsupply_stats_typeworker.dta", clear
+*Part-time workers
+twoway (line mean_hours_ft year if fulltime==0 & sex== 1) (line mean_hours_ft /*
+*/ year if fulltime==0 & sex== 2), legend(lab(1 "Men") lab(2 "Female")) /*
+*/ ytitle("hours worked") xtitle("year") /*
+*/ graphregion(color(white))
+graph export "$figs/laborsupply_parttime.pdf", as (pdf) replace
+*Full-time workers
+twoway (line mean_hours_ft year if fulltime==1 & sex== 1) (line mean_hours_ft /*
+*/ year if fulltime==1 & sex== 2), legend(lab(1 "Men") lab(2 "Female")) /*
+*/ ytitle("hours worked") xtitle("year") /*
+*/ graphregion(color(white))
+graph export "$figs/laborsupply_fulltime.pdf", as (pdf) replace
+
+*Race
+u "$results/laborsupply_stats_race.dta", clear
+label define race_flag 1 "White" 2 "Black" 3 "Asian"
+label value race race_flag
+twoway (line hours_ft year if sex == 1) (line hours_ft year if sex == 2) , /*
+*/by(race_flag, cols(3) graphregion(color(white))) legend(lab(1 "Men") lab(2 "Female")) /*
+*/ ytitle("hours worked") xtitle("year")
+graph export "$figs/laborsupply_race.pdf", as (pdf) replace
+
+*Race and type
+*part
+u "$results/laborsupply_stats_type_race.dta", clear
+label define race_flag 1 "White" 2 "Black" 3 "Asian"
+label value race race_flag
+twoway (line mean_hours_ft year if sex == 1 & fulltime == 0) (line mean_hours_ft year if sex == 2 & fulltime== 0), /*
+*/by(race_flag, cols(3) graphregion(color(white))) legend(lab(1 "Men") lab(2 "Female")) /*
+*/ ytitle("hours worked") xtitle("year")
+graph export "$figs/laborsupply_race_partime.pdf", as (pdf) replace
+
+*full
+twoway (line mean_hours_ft year if sex == 1 & fulltime == 1) (line mean_hours_ft year if sex == 2 & fulltime== 1), /*
+*/by(race_flag, cols(3) graphregion(color(white))) legend(lab(1 "Men") lab(2 "Female")) /*
+*/ ytitle("hours worked") xtitle("year")
+graph export "$figs/laborsupply_race_full.pdf", as (pdf) replace
+
+**Wage Plots & Adjust by inflation
+*Total
+u "$results/wages_stats.dta", clear
+
+*Merge CPI & Adjustment
+merge m:1 year using "cpi_deflactor.dta", nogen keep(match)
+gen mean_hwagereal = (mean_hwage/deflactor)*100
+gen median_hwagereal = (median_hwage/deflactor)*100
+
+twoway (line mean_hwage median_hwage year if sex== 1) (line mean_hwage /*
+*/ median_hwage year if sex== 2,  lpattern(dash dash)), legend(lab(1 "Male Mean Wage") lab(2 "Male Median Wage") /*
+*/ lab(3 "Female Mean Wage") lab(4 "Female Median Wage")) ytitle("hour wage") xtitle("year") /*
+*/ graphregion(color(white))
+graph export "$figs/nominalwages.pdf", as (pdf) replace
+
+twoway (line mean_hwagereal median_hwagereal year if sex== 1) (line mean_hwagereal /*
+*/ median_hwagereal year if sex== 2,  lpattern(dash dash)), legend(lab(1 "Male Real Mean Wage") lab(2 "Male Real Median Wage") /*
+*/ lab(3 "Female Real Mean Wage") lab(4 "Female Real Median Wage")) ytitle("hour wage (2015=100)") xtitle("year") /*
+*/ graphregion(color(white))
+graph export "$figs/realwages.pdf", as (pdf) replace
+
+*Type of Worker & Gender
+u "$results/wages_stats_typeworker.dta", clear
+label define fulltime 0 "Part-time" 1 "Full-time" 
+label value full fulltime
+
+*Merge CPI & Adjustment
+merge m:1 year using "cpi_deflactor.dta", nogen keep(match)
+gen mean_hwagereal = (mean_hwage/deflactor)*100
+gen median_hwagereal = (median_hwage/deflactor)*100
+
+twoway (line median_hwagereal mean_hwagereal year if fulltime == 0), /*
+*/by(sex, cols(2) graphregion(color(white))) legend(lab(1 "Median") lab(2 "Mean")) /*
+*/ ytitle("real hour wage (2015=100)") xtitle("year")
+graph export "$figs/wages_partime_gender.pdf", as (pdf) replace
+twoway (line median_hwagereal mean_hwagereal year if fulltime == 1), /*
+*/by(sex, cols(2) graphregion(color(white))) legend(lab(1 "Median") lab(2 "Mean")) /*
+*/ ytitle("real hour wage (2015=100)") xtitle("year")
+graph export "$figs/wages_fulltime_gender.pdf", as (pdf) replace
+
+*Life cycle wage
+u "$results/wages_stats_age.dta", clear
+merge m:1 year using "cpi_deflactor.dta", nogen keep(match)
+gen mean_hwagereal = (mean_hwage/deflactor)*100
+gen median_hwagereal = (median_hwage/deflactor)*100
+
+twoway (line mean_hwagereal median_hwagereal age_group if year==2000 ) (connected /*
+*/ mean_hwagereal median_hwagereal age_group if year==2015 ), graphregion(color(white)) /*
+*/  xlabel(1 "15-19" 2 "20-24" 3 "25-29" 4 "30-34" 5 "35-39" 6 "40-44" /*
+*/ 7 "45-49" 8 "50-55" 9 "51-60" 10 "61-65" 11 "66-70") legend(lab(1 "Mean (2000)") lab(2 "Median (2000)") /*
+*/ lab(3 "Mean (2015)") lab(4 "Median (2015)")) ytitle("real hourly wage")
+graph export "$figs/wages_lyfecycle.pdf", as (pdf) replace
+
+*gender
+u "$results/wages_stats_age_sex.dta", clear
+merge m:1 year using "cpi_deflactor.dta", nogen keep(match)
+gen mean_hwagereal = (mean_hwage/deflactor)*100
+gen median_hwagereal = (median_hwage/deflactor)*100
+
+twoway (line mean_hwagereal median_hwagereal age_group if year==2000 ) (connected /*
+*/ mean_hwagereal median_hwagereal age_group if year==2015 ), by(sex, cols(1) graphregion(color(white))) /*
+*/  xlabel(1 "15-19" 2 "20-24" 3 "25-29" 4 "30-34" 5 "35-39" 6 "40-44" /*
+*/ 7 "45-49" 8 "50-55" 9 "51-60" 10 "61-65" 11 "66-70") legend(lab(1 "Mean (2000)") lab(2 "Median (2000)") /*
+*/ lab(3 "Mean (2015)") lab(4 "Median (2015)")) ytitle("real hourly wage")
+graph export "$figs/wages_lyfecycle_sex.pdf", as (pdf) replace
+
+** Education 
+u "$results/edu_at.dta", clear
+drop if edatt == .
+rename hs  n
+*Let prepare the shares
+egen total = sum(n), by (year) 
+egen total_m = sum(n) if sex==1, by (year)
+egen total_f = sum(n) if sex==2, by (year)
+egen hs = sum(n) if edatt >0, by(year)
+egen hs_m = sum(n) if edatt > 0 & sex == 1, by(year) 
+egen hs_f = sum(n) if edatt > 0 & sex == 2, by(year)
+egen co = sum(n) if edatt == 2, by(year)
+egen co_m = sum(n) if edatt == 2 & sex == 1, by(year) 
+egen co_f = sum(n) if edatt == 2 & sex == 2, by(year)
+
+gen perc_hs = hs / total
+gen perc_co = co / total
+gen perc_hs_m = hs_m/total_m
+gen perc_hs_f = hs_f/total_f
+gen perc_co_m = co_m/total_m
+gen perc_co_f = co_f/total_f
+
+twoway line perc_hs_m perc_hs_f perc_hs year, legend(lab(1 "High School completion (Male)")/*
+*/ lab(2 "High School completion (Female)") lab(3 "High School completion")) /*
+*/ ytitle("% share") xtitle("year") graphregion(color(white))
+graph export "$figs/hs.pdf", as (pdf) replace
+
+twoway line perc_co_m perc_co_f perc_co year, legend(lab(1 "College completion (Male)") /*
+*/ lab(2 "College completion (Female)") lab(3 "College completion")) /*
+*/ ytitle("% share") xtitle("year") graphregion(color(white))
+graph export "$figs/co.pdf", as (pdf) replace
+
+*Prepare share by race for table
+u "$results/edu_at_race.dta",clear
+rename hs  n
+egen total_w = sum(n) if sex==1 & race_flag==1, by (year_group)
+egen hs_w = sum(n) if sex==1 & race_flag==1 & edatt==1, by (year_group) 
+egen co_w = sum(n) if sex==1 & race_flag==1 & edatt==2, by (year_group) 
+
+egen total_b = sum(n) if sex==1 & race_flag==2, by (year_group)
+egen hs_b = sum(n) if sex==1 & race_flag==2 & edatt==1, by (year_group) 
+egen co_b = sum(n) if sex==1 & race_flag==2 & edatt==2, by (year_group) 
+
+egen total_a = sum(n) if sex==1 & race_flag==3, by (year_group)
+egen hs_a = sum(n) if sex==1 & race_flag==3 & edatt==1, by (year_group) 
+egen co_a = sum(n) if sex==1 & race_flag==3 & edatt==2, by (year_group) 
+
+egen total_o = sum(n) if sex==1 & race_flag==., by (year_group)
+egen hs_o = sum(n) if sex==1 & race_flag==. & edatt==1, by (year_group) 
+egen co_o = sum(n) if sex==1 & race_flag==. & edatt==2, by (year_group) 
+
+
+local shares "total_w hs_w co_w total_b hs_b co_b total_a hs_a co_a total_o hs_o co_o"
+foreach v of local shares{
+bysort year_group (`v') : replace `v' = `v'[_n-1] if missing(`v')
+}
+
+gen sh_hs_w= hs_w/total_w
+gen sh_co_w= co_w/total_w
+gen sh_hs_b= hs_b/total_b
+gen sh_co_b= co_b/total_b
+gen sh_hs_a= hs_a/total_a
+gen sh_co_a= co_a/total_a
+gen sh_hs_o= hs_o/total_o
+gen sh_co_o= co_o/total_o
+
+bysort year: gen fake_id = _n
+keep if fake_id==1
+keep year_group sh_hs_w sh_co_w sh_hs_b sh_co_b sh_hs_a sh_co_a sh_hs_o sh_co_o 
+save "$results/table_edat_race_latex.dta", replace
+
+** Fertility
+u "$results\fertilityrate_agegroup.dta", clear
+gen rate=rate_fer/10
+label define race_flag 1 "White" 2 "Black" 3 "Asian"
+label value race race_flag
+
+twoway (line rate age_group if year == 2000) (line rate age_group if year == 2015), /*
+*/ by(race_flag, cols(1) graphregion(color(white))) xlabel(1 "15-19" 2 "20-24" 3 "25-29" 4 "30-34" 5 "35-39" 6 "40-44" /*
+*/ 7 "45-49") ytitle("Births per 100 women") xtitle("Age Group") legend(lab(1 "2000") lab(2 "2015"))
+graph export "$figs/birthsper100_20002015.pdf", as (pdf) replace
+
+
+u "$results\fertility_stats_race.dta", clear
+label define race_flag 1 "White" 2 "Black" 3 "Asian"
+label value race race_flag
+
+twoway (line nchild_mean age_group if year == 2000) (line nchild_mean age_group if year == 2015), /*
+*/ by(race_flag, cols(1) graphregion(color(white))) xlabel(1 "15-19" 2 "20-24" 3 "25-29" 4 "30-34" 5 "35-39" 6 "40-44" /*
+*/ 7 "45-49") ytitle("# Child") xtitle("Age Group") legend(lab(1 "2000") lab(2 "2015"))
+graph export "$figs/nchilds_20002015.pdf", as (pdf) replace
+
+u "$results/fertilityrate.dta", clear
+twoway line rate_fer year , legend(lab(1 "Fertility"))/*
+*/ ytitle("Births per 1000 women") xtitle("year") graphregion(color(white))
+graph export "$figs/births_total.pdf", as (pdf) replace
+
+******************************************************************************
+* Question 2
+*******************************************************************************
+u "$results/nchild_byedgroup.dta", clear
+label define age_group 1 "15-19 years" 2 "20-24 years" 3 "25-29 years" 4 "30-34 years" 5 "35-39 years" 6 "40-44 years" 7 "45-49 years"
+label value age age_group
+keep if age_group > 2 & age_group<7
+
+twoway (line child_n year if ed_group == 1) (line child_n year if ed_group == 2) (line child_n year /*
+*/ if ed_group == 3), by(age_group, cols(2) graphregion(color(white))) legend(lab(1 "High School and below") lab(2 /*
+*/ "Some College") lab(3 "College and above")) xtitle("Year") ytitle("# of child")
+graph export "$figs/n_childbyedgroup.pdf", as (pdf) replace
+
+******************************************************************************
+*Question 3
+******************************************************************************
+u "$results/married_stats.dta", clear
+label define race_flag 1 "White" 2 "Black" 3 "Asian"
+label value race race_flag
+
+*Let prepare shares
+egen total_m = sum(marriage) if married==1, by (year) 
+egen total_s = sum(marriage) if married==0, by (year)
+egen total_m1 = sum(marriage) if married==1 & ed_group==1, by (year) 
+egen total_s1 = sum(marriage) if married==0 & ed_group==1, by (year)
+egen total_m2 = sum(marriage) if married==1 & ed_group==2, by (year) 
+egen total_s2 = sum(marriage) if married==0 & ed_group==2, by (year)
+egen total_m3 = sum(marriage) if married==1 & ed_group==3, by (year) 
+egen total_s3 = sum(marriage) if married==0 & ed_group==3, by (year)
+
+local shares "total_m total_s total_m1 total_s1 total_m2 total_s2 total_m3 total_s3"
+foreach v of local shares{
+bysort year (`v') : replace `v' = `v'[_n-1] if missing(`v')
+}
+
+gen share_m = total_m/(total_m+total_s)
+gen share_s = 1 - share_m
+gen share_m1 = total_m1/(total_m1+total_s1)
+gen share_s1 = 1 - share_m1
+gen share_m2 = total_m2/(total_m2+total_s2)
+gen share_s2 = 1 - share_m2
+gen share_m3 = total_m3/(total_m3+total_s3)
+gen share_s3 = 1 - share_m3
+
+twoway line share_m1 share_m2 share_m3 year, legend(lab(1 " Married - HS and Below")/*
+*/ lab(2 "Married - Some College") lab(3 "Married - College and above")) /*
+*/ ytitle("% share") xtitle("year") graphregion(color(white))
+graph export "$figs/total_ms.pdf", as (pdf) replace
+
+
+*Same as above but for tables (year groups)
+u "$results/married_stats_table.dta", clear
+egen total_m1 = sum(marriage) if married==1 & ed_group==1, by (year_group race_flag) 
+egen total_s1 = sum(marriage) if married==0 & ed_group==1, by (year_group race_flag)
+egen total_m2 = sum(marriage) if married==1 & ed_group==2, by (year_group race_flag) 
+egen total_s2 = sum(marriage) if married==0 & ed_group==2, by (year_group race_flag)
+egen total_m3 = sum(marriage) if married==1 & ed_group==3, by (year_group race_flag) 
+egen total_s3 = sum(marriage) if married==0 & ed_group==3, by (year_group race_flag)
+
+local shares "total_m1 total_s1 total_m2 total_s2 total_m3 total_s3"
+foreach v of local shares{
+bysort year race_flag (`v') : replace `v' = `v'[_n-1] if missing(`v')
+}
+
+gen share_m1 = total_m1/(total_m1+total_s1)
+gen share_s1 = 1 - share_m1
+gen share_m2 = total_m2/(total_m2+total_s2)
+gen share_s2 = 1 - share_m2
+gen share_m3 = total_m3/(total_m3+total_s3)
+gen share_s3 = 1 - share_m3
+
+keep year_group married ed_group sex race_flag share_m1 share_s1 share_m2 share_s2 share_m3 share_s3
+save "$results/married_stats_table_race.dta", replace
+
+
+u "$results/married_stats_table.dta", clear
+egen total_m1 = sum(marriage) if married==1 & ed_group==1, by (year_group sex) 
+egen total_s1 = sum(marriage) if married==0 & ed_group==1, by (year_group sex)
+egen total_m2 = sum(marriage) if married==1 & ed_group==2, by (year_group sex) 
+egen total_s2 = sum(marriage) if married==0 & ed_group==2, by (year_group sex)
+egen total_m3 = sum(marriage) if married==1 & ed_group==3, by (year_group sex) 
+egen total_s3 = sum(marriage) if married==0 & ed_group==3, by (year_group sex)
+
+local shares "total_m1 total_s1 total_m2 total_s2 total_m3 total_s3"
+foreach v of local shares{
+bysort year race_flag (`v') : replace `v' = `v'[_n-1] if missing(`v')
+}
+
+gen share_m1 = total_m1/(total_m1+total_s1)
+gen share_s1 = 1 - share_m1
+gen share_m2 = total_m2/(total_m2+total_s2)
+gen share_s2 = 1 - share_m2
+gen share_m3 = total_m3/(total_m3+total_s3)
+gen share_s3 = 1 - share_m3
+
+keep year_group married ed_group sex race_flag share_m1 share_s1 share_m2 share_s2 share_m3 share_s3
+save "$results/married_stats_table_gender.dta", replace
+
+
+u "$results/married_stats_age.dta", clear
+label define age_group 1 "15-19 years" 2 "20-24 years" 3 "25-29 years" 4 "30-34 years" 5 "35-39 years" 6 "40-44 years" 7 "45-49 years"
+label value age age_group
+egen total_m1 = sum(marriage) if married==1 & ed_group==1, by (year age_group) 
+egen total_s1 = sum(marriage) if married==0 & ed_group==1, by (year age_group) 
+egen total_m2 = sum(marriage) if married==1 & ed_group==2, by (year age_group)  
+egen total_s2 = sum(marriage) if married==0 & ed_group==2, by (year age_group) 
+egen total_m3 = sum(marriage) if married==1 & ed_group==3, by (year age_group)  
+egen total_s3 = sum(marriage) if married==0 & ed_group==3, by (year age_group) 
+
+local shares "total_m1 total_s1 total_m2 total_s2 total_m3 total_s3"
+foreach v of local shares{
+bysort year age_group (`v') : replace `v' = `v'[_n-1] if missing(`v')
+}
+
+gen share_m1 = total_m1/(total_m1+total_s1)
+gen share_s1 = 1 - share_m1
+gen share_m2 = total_m2/(total_m2+total_s2)
+gen share_s2 = 1 - share_m2
+gen share_m3 = total_m3/(total_m3+total_s3)
+gen share_s3 = 1 - share_m3
+
+keep if year == 2000 | year == 2015
+twoway (line share_m1 share_m2 share_m3 age_group), by(year, cols(2) graphregion(color(white))) legend(lab(1 " Married - HS and Below")/*
+*/ lab(2 "Married - Some College") lab(3 "Married - College and above")) xlabel(1 "15-19" 2 "20-24" 3 "25-29" 4 "30-34" 5 "35-39" 6 "40-44" /*
+*/ 7 "45-49") ytitle("Share (%)") xtitle("Age Group")
+graph export "$figs/total_ms_agegroup.pdf", as (pdf) replace
+}
+
+log close 
